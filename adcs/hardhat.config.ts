@@ -7,6 +7,7 @@ import 'hardhat-deploy'
 import '@nomiclabs/hardhat-solhint'
 import '@nomicfoundation/hardhat-verify'
 import '@nomicfoundation/hardhat-chai-matchers'
+import '@nomicfoundation/hardhat-foundry'
 
 module.exports = {
   typechain: {

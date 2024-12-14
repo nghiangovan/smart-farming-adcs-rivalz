@@ -128,3 +128,8 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Foundry
+adcs/cache_forge/
+adcs/out/
+adcs/lib/
