@@ -1,0 +1,3 @@
+[submodule "smart-order-router"]
+	path = smart-order-router
+	url = git@github.com:Uniswap/smart-order-router.git
