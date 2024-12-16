@@ -2,20 +2,28 @@
 pragma solidity ^0.8.20;
 
 import "../ADCSConsumerFulfill.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "../openzeppelin/Ownable.sol";
+import "../uniswap/interfaces/ISwapRouter02.sol";
+import "../uniswap/interfaces/IQuoterV2.sol";
+import "../uniswap/interfaces/INonfungiblePositionManager.sol";
+import "../uniswap/interfaces/IUniswapV3Factory.sol";
+import "../uniswap/interfaces/IUniswapV3Pool.sol";
+import "../uniswap/interfaces/IV3SwapRouter.sol";
+import "../openzeppelin/interfaces/IERC20.sol";
+import "../openzeppelin/SafeERC20.sol";
+import "../openzeppelin/utils/ReentrancyGuard.sol";
 
 contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    address public immutable USDC;
-    ISwapRouter public immutable swapRouter;
-    INonfungiblePositionManager public immutable positionManager;
+    int24 internal constant MIN_TICK = -887272;
+    int24 internal constant MAX_TICK = -MIN_TICK;
+
+    address public USDC;
+    ISwapRouter02 public swapRouter02;
+    INonfungiblePositionManager public positionManager;
+    IUniswapV3Factory public factory;
+    IQuoterV2 public quoterV2;
 
     struct InfoRequest {
         address user;
@@ -28,18 +36,16 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
     struct InfoSuggestPool {
         string name;
         address addr;
-        uint8 decimals;
-        uint8 apr;
-        uint8 risk;
+        uint16 apr; // 10000 = 100.00%
+        uint16 risk; // 10000 = 100.00%
         bytes pathToken0; // path swap from USDC to token0
         bytes pathToken1; // path swap from USDC to token1
     }
 
     mapping(address => uint256) public userSlippageSwap; // user => slippage (from 1.00 to 100.00)
-    mapping(address => uint256) public userSlippageLiquidity; // user => slippage (from 6.00 to 100.00)
     mapping(address => mapping(address => bool)) public mapUserWhitelistPools;
     mapping(address => address[]) public arrayUserWhitelistPools;
-    mapping(uint256 => InfoRequest) public requestIdUser; // requestId => (user, positionTokenId)
+    mapping(uint256 => InfoRequest) public requestIdUser; // requestId => InfoRequest()
 
     address[] public usersFarming;
 
@@ -50,6 +56,7 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
     event FarmingStopped(address indexed user, address indexed pool);
     event AddedPoolsToWhitelist(address indexed user, address[] indexed pools);
     event RemovedPoolsFromWhitelist(address indexed user, address[] indexed pools);
+    event LiquidityAddedMore(address indexed user, address indexed pool, uint256 amount);
 
     // Errors
     error InsufficientBalance(string code, uint256 amount);
@@ -58,33 +65,38 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
     error OwnerNotApprovedForThisContract();
     error NotOwnerPosition();
 
-    constructor(address _coordinator, address _usdc, address _swapRouter, address _factory, address _positionManager)
-        ADCSConsumerBase(_coordinator)
-        Ownable(msg.sender)
-    {
+    constructor(
+        address _coordinator,
+        address _usdc,
+        address _swapRouter,
+        address _factory,
+        address _positionManager,
+        address _quoterV2
+    ) ADCSConsumerBase(_coordinator) Ownable(msg.sender) {
         USDC = _usdc;
-        swapRouter = ISwapRouter(_swapRouter);
+        swapRouter02 = ISwapRouter02(_swapRouter);
         factory = IUniswapV3Factory(_factory);
         positionManager = INonfungiblePositionManager(_positionManager);
-        IERC20(USDC).safeApprove(address(swapRouter), type(uint256).max);
+        quoterV2 = IQuoterV2(_quoterV2);
+        IERC20(USDC).approve(address(swapRouter02), type(uint256).max);
     }
 
-    function changeConfig(address _usdc, address _swapRouter, address _factory, address _positionManager)
-        external
-        onlyOwner
-    {
+    function changeConfig(
+        address _usdc,
+        address _swapRouter02,
+        address _factory,
+        address _positionManager,
+        address _quoterV2
+    ) external onlyOwner {
         if (_usdc != address(0)) USDC = _usdc;
-        if (_swapRouter != address(0)) swapRouter = ISwapRouter(_swapRouter);
+        if (_swapRouter02 != address(0)) swapRouter02 = ISwapRouter02(_swapRouter02);
         if (_factory != address(0)) factory = IUniswapV3Factory(_factory);
         if (_positionManager != address(0)) positionManager = INonfungiblePositionManager(_positionManager);
+        if (_quoterV2 != address(0)) quoterV2 = IQuoterV2(_quoterV2);
     }
 
     function setSlippageSwap(uint256 _slippage) external {
         userSlippageSwap[msg.sender] = _slippage;
-    }
-
-    function setSlippageLiquidity(uint256 _slippage) external {
-        userSlippageLiquidity[msg.sender] = _slippage;
     }
 
     // Add multiple pools to user's whitelist
@@ -147,17 +159,18 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
         return requestId;
     }
 
+    function getInfoRequest(uint256 requestId) external view returns (InfoRequest memory) {
+        return requestIdUser[requestId];
+    }
+
     // Fulfill farming pool request
     function fulfillDataRequest(uint256 requestId, bytes memory response) internal virtual override {
-        InfoSuggestPool memory suggestPool = abi.decode(response, InfoSuggestPool);
+        InfoSuggestPool memory suggestPool = abi.decode(response, (InfoSuggestPool));
         _processFarming(requestIdUser[requestId], suggestPool);
     }
 
     // Process suggested farming pools with whitelist check
-    function _processFarming(
-        InfoRequest memory ir,
-        InfoSuggestPool memory suggestPool
-    ) internal {
+    function _processFarming(InfoRequest memory ir, InfoSuggestPool memory suggestPool) internal {
         // Check if whitelist not empty and pool not in the user's whitelist
         if (arrayUserWhitelistPools[ir.user].length > 0 && !mapUserWhitelistPools[ir.user][suggestPool.addr]) {
             revert PoolNotInWhitelist();
@@ -165,49 +178,45 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
 
         // If whitelist is empty then passed all pools
 
-        (,, address token0, address token1, uint24 fee,,,,,,) = positionManager.positions(ir.positionTokenId);
-        address addrPoolPosition = factory.getPool(token0, token1, fee);
+        uint256 totalAmountOut = 0;
+        uint256 positionTokenId = ir.positionTokenId;
 
-        if (positionTokenId != 0 && suggestPool.addr != addrPoolPosition) {
-            uint256 totalAmountOut = _removeLiquidityToUSDC(
-                ir.positionTokenId,
-                positionManager.positions(ir.positionTokenId).liquidity,
-                ir.pathToken0Position,
-                ir.pathToken1Position,
-                address(this)
-            );
-            _addLiquidity(
-                ir.user,
-                suggestPool.addr,
-                totalAmountOut,
-                ir.amount,
-                0,
-                suggestPool.pathToken0,
-                suggestPool.pathToken1
-            );
-        } else {
-            _addLiquidity(
-                ir.user,
-                suggestPool.addr,
-                0,
-                ir.amount,
-                ir.positionTokenId,
-                suggestPool.pathToken0,
-                suggestPool.pathToken1
-            );
+        if (ir.positionTokenId != 0) {
+            (,, address token0, address token1, uint24 fee,,, uint128 liquidity,,,,) =
+                positionManager.positions(ir.positionTokenId);
+            address addrPoolPosition = factory.getPool(token0, token1, fee);
+
+            if (suggestPool.addr != addrPoolPosition) {
+                totalAmountOut = _removeLiquidityToUSDC(
+                    ir.positionTokenId,
+                    liquidity,
+                    ir.pathToken0Position,
+                    ir.pathToken1Position,
+                    address(this)
+                );
+                positionTokenId = 0;
+            }
         }
-    }
 
-    function addLiquidity(uint256 positionTokenId, uint256 amountMore) external {
         _addLiquidity(
-            msg.sender, 
-            suggestPool.addr, 
-            0,
-            amountMore, 
-            positionTokenId, 
-            suggestPool.pathToken0, 
+            ir.user,
+            suggestPool.addr,
+            totalAmountOut,
+            ir.amount,
+            positionTokenId,
+            suggestPool.pathToken0,
             suggestPool.pathToken1
         );
+    }
+
+    function addLiquidity(
+        uint256 positionTokenId,
+        uint256 amountMore,
+        address poolAddress,
+        bytes memory pathToken0,
+        bytes memory pathToken1
+    ) external {
+        _addLiquidity(msg.sender, poolAddress, 0, amountMore, positionTokenId, pathToken0, pathToken1);
     }
 
     // Add liquidity to a specific pool
@@ -228,12 +237,11 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
         if (IERC20(USDC).allowance(user, address(this)) < amountMore) revert InsufficientAllowance("USDC", amountMore);
         if (amountMore > 0) IERC20(USDC).safeTransferFrom(user, address(this), amountMore);
 
-
         IUniswapV3Pool pool = IUniswapV3Pool(poolAddress);
         address token0 = pool.token0();
         address token1 = pool.token1();
         uint24 fee = pool.fee();
-        
+
         uint256 amount = amountHeld + amountMore;
 
         uint256 halfAmount = amount / 2;
@@ -247,25 +255,22 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
         else amount1 = swapExactInput(pathToken1, halfAmount);
 
         if (IERC20(token0).allowance(address(this), address(positionManager)) < amount0) {
-            IERC20(token0).safeApprove(address(positionManager), type(uint256).max);
+            IERC20(token0).approve(address(positionManager), type(uint256).max);
         }
 
         if (IERC20(token1).allowance(address(this), address(positionManager)) < amount1) {
-            IERC20(token1).safeApprove(address(positionManager), type(uint256).max);
+            IERC20(token1).approve(address(positionManager), type(uint256).max);
         }
 
-        // 600 = 6.00% is Default if slippage is not set
-        uint256 slippageAddLiquidity = userSlippageLiquidity[user] == 0 ? 600 : userSlippageLiquidity[user];
-
         if (positionTokenId == 0) {
-            (uint160 sqrtPriceX96, int24 currentTick,,,,,) = pool.slot0();
+            (, int24 currentTick,,,,,) = pool.slot0();
             int24 tickSpacing = pool.tickSpacing();
             int24 tickLower = currentTick - (currentTick % tickSpacing) - (tickSpacing * 6); // 6% below current price
-            int24 tickUpper = TickMath.MAX_TICK - (TickMath.MAX_TICK % tickSpacing); // Upper limit to max tick
+            int24 tickUpper = MAX_TICK - (MAX_TICK % tickSpacing); // Upper limit to max tick
 
             // Ensure ticks are valid
-            if (tickLower < TickMath.MIN_TICK) tickLower = TickMath.MIN_TICK;
-            if (tickUpper > TickMath.MAX_TICK) tickUpper = TickMath.MAX_TICK;
+            if (tickLower < MIN_TICK) tickLower = MIN_TICK;
+            if (tickUpper > MAX_TICK) tickUpper = MAX_TICK;
 
             INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
                 token0: token0,
@@ -275,8 +280,8 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
                 tickUpper: tickUpper,
                 amount0Desired: amount0,
                 amount1Desired: amount1,
-                amount0Min: amount0 * (10000 - slippageAddLiquidity) / 10000,
-                amount1Min: amount1 * (10000 - slippageAddLiquidity) / 10000,
+                amount0Min: 0,
+                amount1Min: 0,
                 recipient: address(this),
                 deadline: block.timestamp + 15 minutes
             });
@@ -291,31 +296,29 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
                 tokenId: positionTokenId,
                 amount0Desired: amount0,
                 amount1Desired: amount1,
-                amount0Min: amount0 * (10000 - slippageAddLiquidity) / 10000,
-                amount1Min: amount1 * (10000 - slippageAddLiquidity) / 10000,
+                amount0Min: 0,
+                amount1Min: 0,
                 deadline: block.timestamp + 15 minutes
             });
 
             positionManager.increaseLiquidity(params);
 
-            emit LiquidityAdded(user, poolAddress, amount);
+            emit LiquidityAddedMore(user, poolAddress, amount);
         }
     }
 
     function swapExactInput(bytes memory path, uint256 amountIn) internal returns (uint256 amountOut) {
-        // 100 = 1.00% is Default if slippage is not set
-        uint256 slippage = userSlippageSwap[msg.sender] == 0 ? 100 : userSlippageSwap[msg.sender];
-        uint256 expectedAmountOut = quoter.quoteExactInput(path, amountIn);
-        uint256 amountOutMinimum = expectedAmountOut * (10000 - slippage) / 10000;
-        ISwapRouter.ExactInputParams memory params = ISwapRouter.ExactInputParams({
+        // 400 = 4.00% is Default if slippage is not set
+        uint256 slippage = userSlippageSwap[msg.sender] == 0 ? 400 : userSlippageSwap[msg.sender];
+        (uint256 estimatedAmountOut,,,) = quoterV2.quoteExactInput(path, amountIn);
+        uint256 amountOutMinimum = (estimatedAmountOut * (10000 - slippage)) / 10000;
+        IV3SwapRouter.ExactInputParams memory params = IV3SwapRouter.ExactInputParams({
             path: path,
             recipient: address(this),
-            deadline: block.timestamp + 15 minutes,
             amountIn: amountIn,
             amountOutMinimum: amountOutMinimum
         });
-
-        amountOut = swapRouter.exactInput(params);
+        amountOut = swapRouter02.exactInput(params);
     }
 
     function removeLiquidity(uint256 positionTokenId, uint128 amountLiquidity) external {
@@ -323,7 +326,8 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
     }
 
     function removeLiquidityAll(uint256 positionTokenId) external {
-        _removeLiquidity(positionTokenId, positionManager.positions(positionTokenId).liquidity);
+        (,,,,,,, uint128 liquidity,,,,) = positionManager.positions(positionTokenId);
+        _removeLiquidity(positionTokenId, liquidity);
     }
 
     function removeLiquidityToUSDC(
@@ -333,25 +337,16 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
         bytes memory pathToken1
     ) external {
         _removeLiquidityToUSDC(
-            positionTokenId,
-            amountLiquidity,
-            pathToken0,
-            pathToken1,
-            positionManager.ownerOf(positionTokenId)
+            positionTokenId, amountLiquidity, pathToken0, pathToken1, positionManager.ownerOf(positionTokenId)
         );
     }
 
-    function removeLiquidityAllToUSDC(
-        uint256 positionTokenId,
-        bytes memory pathToken0,
-        bytes memory pathToken1
-    ) external {
+    function removeLiquidityAllToUSDC(uint256 positionTokenId, bytes memory pathToken0, bytes memory pathToken1)
+        external
+    {
+        (,,,,,,, uint128 liquidity,,,,) = positionManager.positions(positionTokenId);
         _removeLiquidityToUSDC(
-            positionTokenId,
-            positionManager.positions(positionTokenId).liquidity,
-            pathToken0,
-            pathToken1,
-            positionManager.ownerOf(positionTokenId)
+            positionTokenId, liquidity, pathToken0, pathToken1, positionManager.ownerOf(positionTokenId)
         );
     }
 
@@ -374,10 +369,7 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
             deadline: block.timestamp + 15 minutes
         });
 
-        (uint256 amount0, uint256 amount1) = positionManager.decreaseLiquidity(params);
-
-        (,, address token0, address token1,,,,,, uint128 tokensOwed0, uint128 tokensOwed1) = positionManager
-            .positions(positionTokenId);
+        positionManager.decreaseLiquidity(params);
 
         // Collect tokens
         INonfungiblePositionManager.CollectParams memory collectParams = INonfungiblePositionManager.CollectParams({
@@ -413,10 +405,10 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
             deadline: block.timestamp + 15 minutes
         });
 
-        (uint256 amount0, uint256 amount1) = positionManager.decreaseLiquidity(params);
+        positionManager.decreaseLiquidity(params);
 
-        (,, address token0, address token1,,,,,, uint128 tokensOwed0, uint128 tokensOwed1) = positionManager
-            .positions(positionTokenId);
+        (,, address token0, address token1,,,,,,, uint128 tokensOwed0, uint128 tokensOwed1) =
+            positionManager.positions(positionTokenId);
 
         // Collect tokens
         INonfungiblePositionManager.CollectParams memory collectParams = INonfungiblePositionManager.CollectParams({
@@ -428,11 +420,13 @@ contract SmartFarming is ADCSConsumerFulfillBytes, Ownable, ReentrancyGuard {
 
         positionManager.collect(collectParams);
 
-        if (IERC20(token0).allowance(address(this), address(swapRouter)) < tokensOwed0)
-            IERC20(token0).safeApprove(address(swapRouter), type(uint256).max);
+        if (IERC20(token0).allowance(address(this), address(swapRouter02)) < tokensOwed0) {
+            IERC20(token0).approve(address(swapRouter02), type(uint256).max);
+        }
 
-        if (IERC20(token1).allowance(address(this), address(swapRouter)) < tokensOwed1)
-            IERC20(token1).safeApprove(address(swapRouter), type(uint256).max);
+        if (IERC20(token1).allowance(address(this), address(swapRouter02)) < tokensOwed1) {
+            IERC20(token1).approve(address(swapRouter02), type(uint256).max);
+        }
 
         uint256 amountOut0 = token0 != address(USDC) ? swapExactInput(pathToken0, tokensOwed0) : tokensOwed0;
         uint256 amountOut1 = token1 != address(USDC) ? swapExactInput(pathToken1, tokensOwed1) : tokensOwed1;

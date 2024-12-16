@@ -2,10 +2,10 @@
 pragma solidity ^0.8.20;
 
 import "../ADCSConsumerFulfill.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/IPeripheryPayments.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../openzeppelin/Ownable.sol";
+import "../uniswap/interfaces/ISwapRouter.sol";
+import "../uniswap/interfaces/IPeripheryPayments.sol";
+import "../openzeppelin/interfaces/IERC20.sol";
 
 contract MockTradeMemeCoin is ADCSConsumerFulfillStringAndBool, Ownable {
     using ADCS for ADCS.Request;
@@ -32,11 +32,10 @@ contract MockTradeMemeCoin is ADCSConsumerFulfillStringAndBool, Ownable {
     address public immutable WETH;
     ISwapRouter public immutable swapRouter;
 
-    constructor(
-        address _coordinator,
-        address _weth,
-        address _swapRouter
-    ) ADCSConsumerBase(_coordinator) Ownable(msg.sender) {
+    constructor(address _coordinator, address _weth, address _swapRouter)
+        ADCSConsumerBase(_coordinator)
+        Ownable(msg.sender)
+    {
         WETH = _weth;
         swapRouter = ISwapRouter(_swapRouter);
     }
@@ -70,19 +69,14 @@ contract MockTradeMemeCoin is ADCSConsumerFulfillStringAndBool, Ownable {
      * @return addr The memecoin contract address
      * @return decimals The decimals of the memecoin
      */
-    function getMemeCoin(
-        uint256 index
-    ) external view returns (string memory name, address addr, uint8 decimals) {
+    function getMemeCoin(uint256 index) external view returns (string memory name, address addr, uint8 decimals) {
         require(index < memeCoins.length, "Index out of bounds");
         MemeCoin memory coin = memeCoins[index];
         return (coin.name, coin.addr, coin.decimals);
     }
 
     // Function to request bytes data
-    function requestTradeMemeCoin(
-        bytes32 jobId,
-        uint256 callbackGasLimit
-    ) external returns (uint256 requestId) {
+    function requestTradeMemeCoin(bytes32 jobId, uint256 callbackGasLimit) external returns (uint256 requestId) {
         bytes32 typeId = keccak256(abi.encodePacked("stringAndbool"));
         ADCS.Request memory req = buildRequest(jobId, typeId);
         requestId = COORDINATOR.requestData(callbackGasLimit, req);
@@ -90,10 +84,7 @@ contract MockTradeMemeCoin is ADCSConsumerFulfillStringAndBool, Ownable {
         return requestId;
     }
 
-    function fulfillDataRequest(
-        uint256 requestId,
-        StringAndBool memory response
-    ) internal virtual override {
+    function fulfillDataRequest(uint256 requestId, StringAndBool memory response) internal virtual override {
         string memory tokenName = response.name;
         bool result = response.response;
         // Find memecoin address and decimals by name
@@ -104,7 +95,7 @@ contract MockTradeMemeCoin is ADCSConsumerFulfillStringAndBool, Ownable {
         // Find memecoin address and decimals by name
         address memeTokenAddress;
         uint8 tokenDecimals;
-        for (uint i = 0; i < memeCoins.length; i++) {
+        for (uint256 i = 0; i < memeCoins.length; i++) {
             if (keccak256(bytes(memeCoins[i].name)) == keccak256(bytes(tokenName))) {
                 memeTokenAddress = memeCoins[i].addr;
                 tokenDecimals = memeCoins[i].decimals;

@@ -1,6 +1,10 @@
 {
   "solidity.packageDefaultDependenciesContractsDirectory": "src",
   "solidity.packageDefaultDependenciesDirectory": "node_modules",
-  "solidity.remappings": ["forge-std/=lib/forge-std/src/"],
-  "wake.compiler.solc.remappings": []
+  "solidity.remappings": [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=adcs/node_modules/@openzeppelin/contracts/",
+    "@uniswap/v3-core/=adcs/node_modules/@uniswap/v3-core/",
+    "@uniswap/v3-periphery/=adcs/node_modules/@uniswap/v3-periphery/"
+  ]
 }

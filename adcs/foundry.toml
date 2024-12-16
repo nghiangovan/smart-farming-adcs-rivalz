@@ -1,4 +1,6 @@
 [profile.default]
+optimizer = true
+via_ir = true
 src = 'src'
 out = 'out'
 libs = ['node_modules', 'lib']

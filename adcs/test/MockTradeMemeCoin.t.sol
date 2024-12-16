@@ -4,8 +4,8 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/mock/MockTradeMemeCoin.sol";
 import "../src/ADCSConsumerBase.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "../src/openzeppelin/interfaces/IERC20.sol";
+import "../src/uniswap/interfaces/ISwapRouter.sol";
 
 contract MockTradeMemeCoinTest is Test {
     MockTradeMemeCoin public tradeMeme;
@@ -19,7 +19,7 @@ contract MockTradeMemeCoinTest is Test {
     
     address public owner;
     uint256 public fork;
-    uint256 public BLOCK_NUMBER = 5_275_000; // Specific Base block number
+    uint256 public BLOCK_NUMBER = 23732757;
 
     event DataRequested(uint256 indexed requestId);
     event TradeSuccess(uint256 indexed requestId, uint256 amountIn, bool isBuy);
