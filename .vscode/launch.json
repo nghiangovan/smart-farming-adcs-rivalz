@@ -8,6 +8,16 @@
       "skipFiles": ["<node_internals>/**"],
       "program": "${workspaceFolder}/backend/index.js",
       "cwd": "${workspaceFolder}/backend"
+    },
+    {
+      "name": "Python: Debug Current File",
+      "type": "python",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/providers/.env",
+      "cwd": "${fileDirname}",
+      "args": []
     }
   ]
 }

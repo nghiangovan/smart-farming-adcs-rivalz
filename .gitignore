@@ -134,8 +134,11 @@ adcs/cache_forge/
 adcs/out/
 adcs/lib/
 
-# backend
-backend/node_modules/
-
 # frontend
 frontend/node_modules/
+
+# providers
+providers/venv/
+
+# .venv
+.venv/

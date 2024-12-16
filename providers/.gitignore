@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+
+# Environment variables file
+.env
+
+# Compiled Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# MacOS files
+.DS_Store
+
+# Ignore system files
+Thumbs.db 
