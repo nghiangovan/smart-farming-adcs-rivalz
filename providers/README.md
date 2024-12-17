@@ -31,7 +31,7 @@ participant AI Agent as AI Agent
     end
 
     Adaptor->>AI Agent: Request Latest Information
-    AI Agent->>Vector Database: Query Latest Data
+    Provider (AI Agent)->>Vector Database: Query Latest Data
     Vector Database-->>AI Agent: Retrieve Refined Data
-    AI Agent->>Adaptor: Respond with Formatted Data
+    Provider (AI Agent)->>Adaptor: Respond with Formatted Data
 ```
