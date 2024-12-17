@@ -22,7 +22,7 @@ participant Uniswap Subgraph as Uniswap Subgraph
 participant Data Fetcher as Data Fetcher
 participant Vector Database as Vector Database
 participant Adaptor as Adaptor
-participant AI Agent as AI Agent
+participant Provider as Provider (AI Agent)
 
     loop On New Block Generation
         Uniswap Subgraph->>Data Fetcher: Provide Latest Data
@@ -30,8 +30,8 @@ participant AI Agent as AI Agent
         Data Fetcher->>Vector Database: Embed and Save Data
     end
 
-    Adaptor->>AI Agent: Request Latest Information
-    Provider (AI Agent)->>Vector Database: Query Latest Data
-    Vector Database-->>AI Agent: Retrieve Refined Data
-    Provider (AI Agent)->>Adaptor: Respond with Formatted Data
+    Adaptor->>Provider: Request Latest Information
+    Provider->>Vector Database: Query Latest Data
+    Vector Database-->>Provider: Retrieve Refined Data
+    Provider->>Adaptor: Respond with Formatted Data
 ```
