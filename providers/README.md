@@ -13,3 +13,23 @@
 - The data will then be refined and embedded and saved to the vector database - a normal database for easy retrieval.
 
 - Every time there is a request from the adaptors, it will retrieve and query the latest data, then refine it according to the required format and respond to the requester (smart contract request).
+
+```mermaid
+sequenceDiagram
+participant Uniswap Subgraph as Uniswap Subgraph
+participant Data Fetcher as Data Fetcher
+participant Vector Database as Vector Database
+participant Adaptor as Adaptor
+participant AI Agent as AI Agent
+
+    loop On New Block Generation
+        Uniswap Subgraph->>Data Fetcher: Provide Latest Data
+        Data Fetcher->>Data Fetcher: Refine Data
+        Data Fetcher->>Vector Database: Embed and Save Data
+    end
+
+    Adaptor->>AI Agent: Request Latest Information
+    AI Agent->>Vector Database: Query Latest Data
+    Vector Database-->>AI Agent: Retrieve Refined Data
+    AI Agent->>Adaptor: Respond with Formatted Data
+```
