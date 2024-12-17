@@ -14,6 +14,8 @@
 
 - Every time there is a request from the adaptors, it will retrieve and query the latest data, then refine it according to the required format and respond to the requester (smart contract request).
 
+- In addition, this AI agent also integrates auto detect modules if the data is not in the knowledge or vector database. It will call the APIs that are supported inside. In the future, auto search will be integrated.
+
 ```mermaid
 sequenceDiagram
 participant Uniswap Subgraph as Uniswap Subgraph
