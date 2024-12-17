@@ -5,3 +5,5 @@ pip freeze | grep 'langchain' >> requirements.txt
 pip freeze | grep "^$package==" >> requirements.txt
 
 pip install -r requirements.txt
+
+python -m virtualenv ../.venv

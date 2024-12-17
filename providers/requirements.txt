@@ -7,5 +7,5 @@ python-dotenv
 streamlit
 langchain_community
 langchain-community
-langchain==0.3.12
-langchain-openai==0.2.12
+langchain-openai
+chromadb
