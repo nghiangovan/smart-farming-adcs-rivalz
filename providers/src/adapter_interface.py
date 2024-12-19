@@ -53,31 +53,33 @@ async def main():
         # result = await adapter.process_request(AdapterRequest(
         #     name="Uniswap Pool Data",
         #     network="Base",
-        #     description="Get the latest pool data from Uniswap",
+        #     description="",
         #     variables="",
         #     category_id=1,
-        #     output_type_id=4,
+        #     output_type_id=4, # string_and_bool
         #     # prompt="Which pool has the highest TVL and APR?"
-        #     prompt="What is the best path to swap amount 1 USDC ( 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913 - decimals 6 ) to 1INCH ( 0xc5fecc3a29fb57b5024eec8a2239d4621e111cbe - decimals 18 ) on BASE?"
+        #     prompt="What is the best path to swap amount 1 USDC ( 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913 ) to 1INCH ( 0xc5fecc3a29fb57b5024eec8a2239d4621e111cbe) on BASE?"
+        # ))
+
+        # result = await adapter.process_request(AdapterRequest(
+        #     name="Uniswap Pool Data",
+        #     network="Base",
+        #     description="",
+        #     variables="",
+        #     category_id=1,
+        #     output_type_id=4, # string_and_bool
+        #     # prompt="Which pool has the highest TVL and APR?"
+        #     prompt="Which pool has the highest TVL and APR on BASE?"
         # ))
         
         result = await adapter.process_request(AdapterRequest(
             name="Uniswap Pool Data",
             network="Base",
-            description="Get the latest pool data from Uniswap",
+            description="",
             variables="",
             category_id=1,
-            output_type_id=2,
-            prompt="""
-                What is the best path to swap 
-                amount 1 USDC ( 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913 - decimals 6 ) 
-                to ZRX ( 0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0 - decimals 18 ) on BASE?
-
-                The output should be a tuple of (path, amountOut)
-                Example output bytes:
-                # data plain text: "[V3] 100.00% = USDC -- 0.05% [0xd0b53D9277642d899DF5C87A3966A349A798F224]WETH -- 1% [0xae336df10045F0Bd0A9142dfc27F266a8aadc0Eb]ZRX"
-                # data bytes in solidity: [0xd0b53D9277642d899DF5C87A3966A349A798F224, 500, 0xae336df10045F0Bd0A9142dfc27F266a8aadc0Eb, 10000]
-            """
+            output_type_id=2, # bytes
+            prompt="What is the best path to swap amount 1 USDC ( 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913 ) to ZRX ( 0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0) on BASE?"
         ))
         print(result)
     finally:

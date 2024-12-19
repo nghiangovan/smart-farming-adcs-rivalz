@@ -10,3 +10,6 @@ langchain-community
 langchain-openai
 chromadb
 web3
+fastapi
+uvicorn
+pydantic

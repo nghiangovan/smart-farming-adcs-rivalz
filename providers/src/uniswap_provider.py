@@ -644,18 +644,8 @@ class UniswapPoolAgent:
             # Default to pool_info if there's an error
             return 'pool_info'
 
-    async def _format_output(self, raw_response: Dict[str, Any], output_type: OutputType, question: str) -> Union[bool, bytes, int, Tuple[str, bool]]:
-        """
-        Use AI to format the raw response according to the desired output type and original question
-        
-        Args:
-            raw_response: The raw response from handlers
-            output_type: The desired output format
-            question: The original user query
-            
-        Returns:
-            Formatted response according to output_type
-        """
+    async def _format_output(self, raw_response: Dict[str, Any], output_type: OutputType, question: str) -> Dict[str, Any]:
+        """Format the raw response according to the output type and question context"""
         format_template = """
         Given the original user question and API response, format the answer according to the specified output type.
 
@@ -666,34 +656,60 @@ class UniswapPoolAgent:
 
         Output Type: {output_type}
 
-        Context:
-        - The question asks about: {question}
-        - We have API data showing: {response}
-        - We need to format this as: {output_type}
+        If output type is BYTES, follow these instructions:
+        1. For swap routes, encode the path as follows:
+           - Each segment consists of: tokenIn (20 bytes) + fee (3 bytes) + tokenOut (20 bytes)
+           - Fees must be encoded as 3-byte hex:
+             * 0.01% (100) -> 0x000064
+             * 0.05% (500) -> 0x0001f4
+             * 0.3% (3000) -> 0x000bb8
+             * 1% (10000) -> 0x002710
+           
+        Example correct encodings:
+        1. USDC -> 0.05% -> WETH -> 0.1% -> ZRX
+           USDC: 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913
+           WETH: 0x4200000000000000000000000000000000000006
+           ZRX: 0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0
+           Path: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA029130001f442000000000000000000000000000000000000060003e80x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0
 
-        Requirements by output type:
-        - BOOL: Return "true" or "false" based on whether the API response satisfies the user's query
-        - BYTES: Return a hex string (with 0x prefix) representing the encoded path/data
-        - UINT256: Return a numeric value that best answers the user's question
-        - STRING_AND_BOOL: Return a tuple of (explanation addressing the question, true/false indicating success/validity)
+        2. Token0 -> 0.3% -> Token1
+           Path: <token0_address>000bb8<token1_address>
 
-        Consider:
-        1. The user's original intent from their question
-        2. The relevant data from the API response
-        3. The required output format
-        4. How to best represent the answer in the required format
+        Requirements for BYTES output:
+        1. Must start with "0x"
+        2. Token addresses must be 20 bytes each (40 hex chars)
+        3. Fees must be exactly 3 bytes (6 hex chars)
+        4. No spaces or separators in the final hex string
+        5. Maintain case sensitivity of addresses
 
         Return in JSON format:
         {{
-            "value": "formatted value based on output type",
-            "type": "bool|bytes|uint256|tuple",
-            "explanation": "brief explanation of why this formatting was chosen"
+            "value": "hex_string_for_path",
+            "explanation": "Description of the encoded path"
+        }}
+
+        Example response for BYTES:
+        {{
+            "value": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA029130001f442000000000000000000000000000000000000060003e80x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0",
+            "explanation": "Encoded path: USDC -> 0.05% -> WETH -> 0.1% -> ZRX"
+        }}
+
+        If output type is STRING_AND_BOOL, follow these instructions:
+        - First element: A descriptive string explaining the route and expected output
+        - Second element: true if a valid route was found, false otherwise
+        Example: 
+        {{
+            "value": {{
+                "explanation": "Found optimal route: USDC (0x833589fcd6edb6e08f4c7c32d4f71b54bda02913) -> 0.3% fee -> ZRX (0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0) with expected output X ZRX",
+                "decision": true
+            }},
+            "explanation": "Successfully found swap route through optimal pool with 0.3% fee"
         }}
 
         Answer:"""
 
         try:
-            # Create prompt with all required variables
+            # Create prompt with required variables
             format_prompt = PromptTemplate(
                 template=format_template,
                 input_variables=["question", "response", "output_type"]
@@ -717,37 +733,60 @@ class UniswapPoolAgent:
             
             formatted = json.loads(content.strip())
             
-            # Log the explanation for debugging/monitoring
-            if 'explanation' in formatted:
-                print(f"Format explanation: {formatted['explanation']}")
+            # Prepare the response with explanation
+            result = {
+                "explanation": formatted.get('explanation', 'No explanation provided'),
+            }
             
-            # Convert to appropriate type
-            if output_type == OutputType.BOOL:
-                return str(formatted['value']).lower() == 'true'
-            elif output_type == OutputType.BYTES:
-                return bytes.fromhex(formatted['value'].replace('0x', ''))
-            elif output_type == OutputType.UINT256:
-                return int(formatted['value'])
+            # Handle different output types
+            if output_type == OutputType.BYTES:
+                value = formatted['value']
+                if not value.startswith('0x'):
+                    value = '0x' + value
+                result["value"] = value
             elif output_type == OutputType.STRING_AND_BOOL:
                 value = formatted['value']
                 if isinstance(value, list) and len(value) == 2:
-                    return (str(value[0]), bool(value[1]))
-                raise ValueError("Invalid STRING_AND_BOOL format")
+                    result["value"] = {
+                        "explanation": str(value[0]),
+                        "decision": bool(value[1])
+                    }
+                elif isinstance(value, dict):
+                    result["value"] = {
+                        "explanation": str(value.get('explanation', '')),
+                        "decision": bool(value.get('decision', False))
+                    }
+                else:
+                    raise ValueError(f"Invalid STRING_AND_BOOL format. Expected list or dict, got: {type(value)}")
+            elif output_type == OutputType.BOOL:
+                result["value"] = str(formatted['value']).lower() == 'true'
+            elif output_type == OutputType.UINT256:
+                result["value"] = int(formatted['value'])
+            else:
+                raise ValueError(f"Unsupported output type: {output_type}")
             
-            raise ValueError(f"Unsupported output type: {output_type}")
+            return result
             
         except Exception as e:
             print(f"Error formatting output: {e}")
-            # Return safe defaults based on output type
-            if output_type == OutputType.BOOL:
-                return False
+            error_response = {
+                "explanation": f"Error formatting response: {str(e)}",
+                "value": None
+            }
+            
+            if output_type == OutputType.STRING_AND_BOOL:
+                error_response["value"] = {
+                    "explanation": "Failed to process request. Please check input and try again.",
+                    "decision": False
+                }
+            elif output_type == OutputType.BOOL:
+                error_response["value"] = False
             elif output_type == OutputType.BYTES:
-                return b''
+                error_response["value"] = "0x"
             elif output_type == OutputType.UINT256:
-                return 0
-            elif output_type == OutputType.STRING_AND_BOOL:
-                return ("Error formatting response", False)
-            raise
+                error_response["value"] = 0
+                
+            return error_response
 
     async def handle_request(self, question: str, output_type: OutputType, network: str = 'BASE') -> Union[bool, bytes, int, Tuple[str, bool]]:
         """
