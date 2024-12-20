@@ -66,6 +66,12 @@ SUPPORTED_NETWORKS = {
     'RIVALZ': {'chain_id': 1234, 'name': 'Rivalz'}  # Replace with actual chain ID
 }
 
+SUPPORTED_CHAIN_IDS = {
+    8453: 'BASE',
+    42161: 'ARBITRUM',
+    1234: 'RIVALZ'
+}
+
 # Function to fetch top V3 pools TVL
 def fetch_top_v3_pools_tvl(chain='BASE', token_address=None):
     try:
@@ -153,35 +159,26 @@ class UniswapPoolAgent:
         
         self.prompt = PromptTemplate(template=self.template, input_variables=["context", "question"])
         
-        # Add output type mapping
-        self.output_formatters = {
-            OutputType.BOOL: self._format_bool_output,
-            OutputType.BYTES: self._format_bytes_output,
-            OutputType.UINT256: self._format_uint256_output,
-            OutputType.STRING_AND_BOOL: self._format_string_bool_output
-        }
-        
-        # Initialize other attributes
         self.web3 = Web3()
         self.session = None  # Will be initialized in async context
         
         # Add API handlers mapping
         self.api_handlers = {
             'swap_path': self._handle_swap_path_query,
-            'pool_info': self.query_pools,  # existing handler
-            # Add more API handlers here
+            'pool_info': self.query_pools,
+            'other': self.search_normal
         }
 
-    def process_pool_data(self, pools_data: List[Dict], chain: str) -> None:
+    async def process_pool_data(self, pools_data: List[Dict], symbol_chain_name: str) -> None:
         """Process and store pool data in the vector database"""
-        if chain not in SUPPORTED_NETWORKS:
-            raise ValueError(f"Unsupported chain: {chain}")
+        if symbol_chain_name not in SUPPORTED_NETWORKS:
+            raise ValueError(f"Unsupported chain: {symbol_chain_name}")
             
         documents = []
         metadatas = []
         ids = []
         
-        network_info = SUPPORTED_NETWORKS[chain]
+        network_info = SUPPORTED_NETWORKS[symbol_chain_name]
         
         for pool in pools_data:
             # Create a readable description of the pool
@@ -206,36 +203,67 @@ class UniswapPoolAgent:
             ids.append(pool['address'])
         
         # Add to network-specific ChromaDB collection
-        self.collections[chain].add(
+        self.collections[symbol_chain_name].add(
             documents=documents,
             metadatas=metadatas,
             ids=ids
         )
 
-    def query_pools(self, question: str, chain: str, n_results: int = 3) -> str:
+    async def query_pools(self, question: str, chain_id: int) -> str:
         """Query the vector database and get AI response for specific chain"""
-        if chain not in SUPPORTED_NETWORKS:
-            raise ValueError(f"Unsupported chain: {chain}")
-            
-        # Search for relevant pools in the chain-specific collection
-        results = self.collections[chain].query(
-            query_texts=[question],
-            n_results=n_results
-        )
+        if chain_id not in SUPPORTED_CHAIN_IDS:
+            raise ValueError(f"Unsupported chain: {chain_id}")
         
-        # Combine context
-        context = "\n".join(results['documents'][0])
-        
+        symbol_chain_name = SUPPORTED_CHAIN_IDS[chain_id]
+
+        pools_data = fetch_top_v3_pools_tvl(chain=symbol_chain_name)
+
+        template_prompt = """
+            Given the following Uniswap V3 pool data and user question, provide a detailed analysis and answer:
+
+            Context about the pools:
+            {pools_data}
+
+            User Question: {question}
+
+            Please analyze this data considering:
+            1. Pool liquidity (TVL)
+            2. Trading volume (24h and 30d)
+            3. Fee tiers
+            4. Token pairs
+            5. Transaction counts
+            6. Chain-specific information
+
+            Guidelines for analysis:
+            - Focus on relevant pools for the question
+            - Consider liquidity depth and volume when comparing pools
+            - Account for fee tiers impact on trading
+            - Look at both short-term (24h) and long-term (30d) metrics
+            - Consider the specific chain context (BASE or Arbitrum)
+        """
+
+        intent_prompt = PromptTemplate(template=template_prompt, input_variables=["pools_data", "question"])
+
         # Create chain and get response
-        chain = self.prompt | self.llm
+        chain = intent_prompt | self.llm
         response = chain.invoke({
-            "context": context,
+            "pools_data": pools_data,
+            "question": question,
+            "template_prompt": template_prompt
+        })
+        
+        return response.content
+
+    async def search_normal(self, question: str, chain_id: int) -> str:
+        chain = self.prompt | self.llm
+        response = chain.ainvoke({
+            "chain_id": chain_id,
             "question": question
         })
         
         return response.content
 
-    def update_pool_data(self):
+    async def update_pool_data(self):
         """Fetch latest pool data and update the database for all supported networks"""
         try:
             success = True
@@ -255,30 +283,6 @@ class UniswapPoolAgent:
             print(f"Error in update_pool_data: {e}")
             return False
 
-    def _format_bool_output(self, response: str) -> bool:
-        """Format response as boolean"""
-        # Simple sentiment analysis - can be made more sophisticated
-        positive_keywords = ['yes', 'true', 'high', 'good', 'above']
-        return any(keyword in response.lower() for keyword in positive_keywords)
-
-    def _format_bytes_output(self, response: str) -> bytes:
-        """Format response as bytes"""
-        return response.encode('utf-8')
-
-    def _format_uint256_output(self, response: str) -> int:
-        """Format response as uint256"""
-        # Extract first number from response
-        import re
-        numbers = re.findall(r'\d+\.?\d*', response)
-        if numbers:
-            return int(float(numbers[0]))
-        return 0
-
-    def _format_string_bool_output(self, response: str) -> Tuple[str, bool]:
-        """Format response as string and bool tuple"""
-        is_positive = self._format_bool_output(response)
-        return (response, is_positive)
-    
     async def _get_quote(
         self,
         token_in: str,
@@ -609,6 +613,7 @@ class UniswapPoolAgent:
         Analyze the following query and determine if it's asking about:
         1. Swap path/route information (return 'swap_path')
         2. Pool information/statistics (return 'pool_info')
+        3. Other (return 'other')
 
         Query: {query}
 
@@ -616,33 +621,28 @@ class UniswapPoolAgent:
         - Swap queries usually mention: swapping tokens, finding routes, token addresses, best path
         - Pool queries usually mention: liquidity, TVL, volume, fees, pool statistics
 
-        Return only one word - either 'swap_path' or 'pool_info'.
+        Return only one word - either 'swap_path' or 'pool_info' or 'other'.
 
         Answer:"""
 
         intent_prompt = PromptTemplate(template=intent_template, input_variables=["query"])
         
         try:
-            # Create chain and get response
             chain = intent_prompt | self.llm
             response = await chain.ainvoke({
                 "query": query
             })
             
-            # Clean and validate response
             intent = response.content.strip().lower()
             
-            # Validate the response is one of our supported types
-            if intent not in ['swap_path', 'pool_info']:
-                print(f"AI returned unexpected intent: {intent}, defaulting to pool_info")
-                return 'pool_info'
-                
+            if intent not in ['swap_path', 'pool_info', 'other']:
+                return ''
+            
             return intent
             
         except Exception as e:
             print(f"Error in intent detection: {e}")
-            # Default to pool_info if there's an error
-            return 'pool_info'
+            return ''
 
     async def _format_output(self, raw_response: Dict[str, Any], output_type: OutputType, question: str) -> Dict[str, Any]:
         """Format the raw response according to the output type and question context"""
@@ -656,55 +656,79 @@ class UniswapPoolAgent:
 
         Output Type: {output_type}
 
-        If output type is BYTES, follow these instructions:
-        1. For swap routes, encode the path as follows:
-           - Each segment consists of: tokenIn (20 bytes) + fee (3 bytes) + tokenOut (20 bytes)
-           - Fees must be encoded as 3-byte hex:
+        Response_Data is the response of an AI that may be answering a question 
+        and you just need to rely on the content of this response to give an answer with the conditions below.
+
+        1. If output type is BOOL:
+        - Only return true or false depending on the content of Response Data
+
+        2.1 If output type is BYTES and Response data about swap path:
+        - For swap routes, encode the path as follows:
+           + Each segment consists of: tokenIn (20 bytes) + fee (3 bytes) + tokenOut (20 bytes)
+           + Fees must be encoded as 3-byte hex:
              * 0.01% (100) -> 0x000064
              * 0.05% (500) -> 0x0001f4
              * 0.3% (3000) -> 0x000bb8
              * 1% (10000) -> 0x002710
            
         Example correct encodings:
-        1. USDC -> 0.05% -> WETH -> 0.1% -> ZRX
-           USDC: 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913
-           WETH: 0x4200000000000000000000000000000000000006
-           ZRX: 0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0
-           Path: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA029130001f442000000000000000000000000000000000000060003e80x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0
+            1. USDC -> 0.05% -> WETH -> 0.1% -> ZRX
+            USDC: 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913
+            WETH: 0x4200000000000000000000000000000000000006
+            ZRX: 0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0
+            Path: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA029130001f442000000000000000000000000000000000000060003e83bB4445D30AC020a84c1b5A8A2C6248ebC9779D0
 
-        2. Token0 -> 0.3% -> Token1
-           Path: <token0_address>000bb8<token1_address>
+            2. Token0 -> 0.3% -> Token1
+            Path: <token0_address (cutted prefix '0x')>000bb8<token1_address (cutted prefix '0x')>
 
-        Requirements for BYTES output:
-        1. Must start with "0x"
-        2. Token addresses must be 20 bytes each (40 hex chars)
-        3. Fees must be exactly 3 bytes (6 hex chars)
-        4. No spaces or separators in the final hex string
-        5. Maintain case sensitivity of addresses
+            Requirements for BYTES output:
+            1. Must start with "0x"
+            2. Token addresses must be 20 bytes each (40 hex chars)
+            3. Fees must be exactly 3 bytes (6 hex chars)
+            4. No spaces or separators in the final hex string
+            5. Maintain case sensitivity of addresses
 
-        Return in JSON format:
-        {{
-            "value": "hex_string_for_path",
-            "explanation": "Description of the encoded path"
-        }}
+            Return in JSON format:
+            {{
+                "value": "hex_string_for_path",
+                "explanation": "Description of the encoded path"
+            }}
 
-        Example response for BYTES:
-        {{
-            "value": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA029130001f442000000000000000000000000000000000000060003e80x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0",
-            "explanation": "Encoded path: USDC -> 0.05% -> WETH -> 0.1% -> ZRX"
-        }}
+            Example response for BYTES:
+            {{
+                "value": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA029130001f442000000000000000000000000000000000000060003e83bB4445D30AC020a84c1b5A8A2C6248ebC9779D0",
+                "explanation": "Encoded path: USDC -> 0.05% -> WETH -> 0.1% -> ZRX"
+            }}
+        
+        2.2 If output type is BYTES and Response data not about swap path:
+        - Return hex string of response data
 
-        If output type is STRING_AND_BOOL, follow these instructions:
-        - First element: A descriptive string explaining the route and expected output
-        - Second element: true if a valid route was found, false otherwise
+        3. If output type is UINT256:
+        - Return number depeding on the content of Response Data
+        
+        4. If output type is STRING_AND_BOOL, follow these instructions:
+        - First element: A descriptive string explaining of Response Data
+        - Second element: Only return true or false depending on the content of Response Data
         Example: 
-        {{
-            "value": {{
-                "explanation": "Found optimal route: USDC (0x833589fcd6edb6e08f4c7c32d4f71b54bda02913) -> 0.3% fee -> ZRX (0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0) with expected output X ZRX",
-                "decision": true
-            }},
-            "explanation": "Successfully found swap route through optimal pool with 0.3% fee"
-        }}
+            * this question is about swap path
+            {{
+                "value": {{
+                    "explanation": "[0x833589fcd6edb6e08f4c7c32d4f71b54bda02913, 3000, 0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0]",
+                    "decision": true
+                }},
+                "explanation": "Found optimal route: USDC (0x833589fcd6edb6e08f4c7c32d4f71b54bda02913) -> 0.3% fee -> ZRX (0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0) with expected output X ZRX"
+            }}
+
+            * this question is about pool has TVL and APR the highest
+            {{
+                "value": {{
+                    "explanation": "0xc1a6D4cCB0E913C7f785Fcc60811B34bc8CC801c",
+                    "decision": true
+                }},
+                "explanation": "Found optimal route: USDC (0x833589fcd6edb6e08f4c7c32d4f71b54bda02913) -> 0.3% fee -> ZRX (0x3bB4445D30AC020a84c1b5A8A2C6248ebC9779D0) with expected output X ZRX"
+            }}
+                + `explanation` is pool address
+                + `decision` is true or false depending on the content of Response Data
 
         Answer:"""
 
@@ -720,7 +744,7 @@ class UniswapPoolAgent:
             ai_response = await chain.ainvoke({
                 "question": question,
                 "response": json.dumps(raw_response, indent=2),
-                "output_type": output_type.name
+                "output_type": output_type
             })
             
             # Parse AI response
@@ -738,12 +762,13 @@ class UniswapPoolAgent:
                 "explanation": formatted.get('explanation', 'No explanation provided'),
             }
             
-            # Handle different output types
-            if output_type == OutputType.BYTES:
+            if output_type == OutputType.BOOL:
+                result["value"] = str(formatted['value']).lower() == 'true'
+            elif output_type == OutputType.BYTES:
                 value = formatted['value']
-                if not value.startswith('0x'):
-                    value = '0x' + value
                 result["value"] = value
+            if output_type == OutputType.UINT256:
+                result["value"] = int(formatted['value'])
             elif output_type == OutputType.STRING_AND_BOOL:
                 value = formatted['value']
                 if isinstance(value, list) and len(value) == 2:
@@ -758,10 +783,6 @@ class UniswapPoolAgent:
                     }
                 else:
                     raise ValueError(f"Invalid STRING_AND_BOOL format. Expected list or dict, got: {type(value)}")
-            elif output_type == OutputType.BOOL:
-                result["value"] = str(formatted['value']).lower() == 'true'
-            elif output_type == OutputType.UINT256:
-                result["value"] = int(formatted['value'])
             else:
                 raise ValueError(f"Unsupported output type: {output_type}")
             
@@ -820,11 +841,7 @@ class UniswapPoolAgent:
             if not handler:
                 raise ValueError(f"No handler found for query type: {query_type}")
             
-            # Handle async vs sync handlers
-            if asyncio.iscoroutinefunction(handler):
-                raw_response = await handler(question, chain_id=chain_id)
-            else:
-                raw_response = handler(question, chain=network)
+            raw_response = await handler(question, chain_id=chain_id)
             
             # Use AI to format the response according to output_type and original question
             return await self._format_output(raw_response, output_type, question)

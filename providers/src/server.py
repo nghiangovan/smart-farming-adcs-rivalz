@@ -17,8 +17,8 @@ app = FastAPI(
 adapter: Optional[AdapterInterface] = None
 
 class QueryRequest(BaseModel):
-    network: str = "BASE"
-    output_type_id: int = 4  # Default to STRING_AND_BOOL
+    network: str
+    output_type_id: int
     prompt: str
     category_id: int = 1
     name: Optional[str] = "Uniswap Query"

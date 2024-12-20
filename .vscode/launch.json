@@ -4,10 +4,11 @@
     {
       "type": "node",
       "request": "launch",
-      "name": "Launch Program",
+      "name": "Debug Current File",
       "skipFiles": ["<node_internals>/**"],
-      "program": "${workspaceFolder}/backend/index.js",
-      "cwd": "${workspaceFolder}/backend"
+      "program": "${file}",
+      "cwd": "${fileDirname}",
+      "console": "integratedTerminal"
     },
     {
       "name": "Python: Debug Current File",
